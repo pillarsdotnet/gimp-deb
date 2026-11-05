@@ -151,3 +151,11 @@ demand. It needs the user-level Actions secret `REGISTRY_TOKEN`
 
 The containers run with `--shm-size=1g`: gimp's test suite forks a full GIMP
 under `xvfb`, and Docker's default 64 MB of `/dev/shm` is not enough for it.
+
+`.forgejo/workflows/mirror.yml` keeps the GitHub copy at
+`pillarsdotnet/gimp-deb` in step: on every push to `main` it rebuilds a
+`github` branch — the same history with `.forgejo` pruned from every commit —
+and pushes that to GitHub's `main`. GitHub is a **read-only mirror**;
+development happens on Forgejo. A commit made directly on GitHub makes the
+mirror push fail loudly and has to be cherry-picked onto `main` here. The
+mirror needs the user-level secret `MIRROR_TOKEN`.
