@@ -1,0 +1,138 @@
+From b3c6e3470ed5375cde232c402fefe89e207e4e31 Mon Sep 17 00:00:00 2001
+From: "Robert August Vincent II (Bob)" <pillarsdotnet@gmail.com>
+Date: Thu, 1 Oct 2026 13:16:03 -0400
+Subject: [PATCH] libgimp, pdb, script-fu: Accept a NULL GBytes where empty was
+ assumed
+
+The core already returns a NULL GBytes for a brush without color
+pixels, an empty palette or a missing window handle, but the wire
+protocol has so far delivered it as an empty, non-NULL GBytes. Some
+receivers rely on that and pass the value straight to
+g_bytes_unref_to_data(), g_bytes_get_data() or g_bytes_get_size(), all
+of which reject NULL.
+
+Guard them, ahead of the protocol preserving NULL in the next commit:
+
+- gimp_brush_get_data(): a brush without color pixels;
+- gimp_palette_get_colormap(): an empty palette, which also left
+  *num_bytes uninitialized;
+- Script-Fu's marshalling of a bytes return value;
+- gimp-image-convert-set-dither-matrix, whose (0, 0, empty) call to
+  restore the default matrix is legitimate.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ app/pdb/image-convert-cmds.c                          |  9 +++++++--
+ libgimp/gimpbrush.c                                   |  5 ++++-
+ libgimp/gimppalette.c                                 | 11 ++++++++---
+ pdb/groups/image_convert.pdb                          |  9 +++++++--
+ .../script-fu/libscriptfu/scheme-marshal-return.c     |  8 ++++++--
+ 5 files changed, 32 insertions(+), 10 deletions(-)
+
+diff --git a/app/pdb/image-convert-cmds.c b/app/pdb/image-convert-cmds.c
+index e42ada2b6f..7bed8fcab9 100644
+--- a/app/pdb/image-convert-cmds.c
++++ b/app/pdb/image-convert-cmds.c
+@@ -207,9 +207,14 @@ image_convert_set_dither_matrix_invoker (GimpProcedure         *procedure,
+ 
+   if (success)
+     {
+-      if (width == 0 || height == 0 || g_bytes_get_size (matrix) == width * height)
++      /* An empty matrix, as passed to restore the default one, arrives as
++       * NULL. The g_bytes_*() accessors reject NULL with a critical.
++       */
++      gsize size = matrix ? g_bytes_get_size (matrix) : 0;
++
++      if (width == 0 || height == 0 || size == width * height)
+         {
+-          gimp_image_convert_indexed_set_dither_matrix (g_bytes_get_data (matrix, NULL),
++          gimp_image_convert_indexed_set_dither_matrix (matrix ? g_bytes_get_data (matrix, NULL) : NULL,
+                                                         width, height);
+         }
+       else
+diff --git a/libgimp/gimpbrush.c b/libgimp/gimpbrush.c
+index baf6852c2d..7a7bc2bd67 100644
+--- a/libgimp/gimpbrush.c
++++ b/libgimp/gimpbrush.c
+@@ -184,7 +184,10 @@ gimp_brush_get_data (GimpBrush *brush)
+                           &color_bpp, &color_bytes);
+ 
+   mask  = g_bytes_unref_to_data (mask_bytes, &mask_size);
+-  color = g_bytes_unref_to_data (color_bytes, &color_size);
++  /* A brush without color pixels has no color bytes, which arrive as
++   * NULL. g_bytes_unref_to_data() rejects NULL with a critical.
++   */
++  color = color_bytes ? g_bytes_unref_to_data (color_bytes, &color_size) : NULL;
+ 
+   brush->mask = gegl_buffer_linear_new_from_data ((const gpointer) mask,
+                                                   gimp_brush_data_get_format (mask_bpp, FALSE),
+diff --git a/libgimp/gimppalette.c b/libgimp/gimppalette.c
+index 98b1b8155f..45629727f3 100644
+--- a/libgimp/gimppalette.c
++++ b/libgimp/gimppalette.c
+@@ -74,16 +74,21 @@ gimp_palette_get_colormap (GimpPalette *palette,
+                            gsize       *num_bytes)
+ {
+   GBytes *bytes;
+-  guint8 *colormap;
++  guint8 *colormap = NULL;
+   gint    n_colors;
+-  gsize   n_bytes;
++  gsize   n_bytes  = 0;
+ 
+   g_return_val_if_fail (GIMP_IS_PALETTE (palette), NULL);
+   g_return_val_if_fail (format != NULL, NULL);
+   g_return_val_if_fail (num_colors != NULL || num_bytes != NULL, NULL);
+ 
+   bytes    = _gimp_palette_get_bytes (palette, format, &n_colors);
+-  colormap = g_bytes_unref_to_data (bytes, &n_bytes);
++  /* An empty palette has no bytes, which arrive as NULL.
++   * g_bytes_unref_to_data() rejects NULL with a critical and would leave
++   * n_bytes unset, hence its default of 0 above.
++   */
++  if (bytes)
++    colormap = g_bytes_unref_to_data (bytes, &n_bytes);
+ 
+   if (num_colors)
+     *num_colors = n_colors;
+diff --git a/pdb/groups/image_convert.pdb b/pdb/groups/image_convert.pdb
+index 4f800a6aac..c6ce87c809 100644
+--- a/pdb/groups/image_convert.pdb
++++ b/pdb/groups/image_convert.pdb
+@@ -200,9 +200,14 @@ HELP
+     %invoke = (
+ 	code => <<'CODE'
+ {
+-  if (width == 0 || height == 0 || g_bytes_get_size (matrix) == width * height)
++  /* An empty matrix, as passed to restore the default one, arrives as
++   * NULL. The g_bytes_*() accessors reject NULL with a critical.
++   */
++  gsize size = matrix ? g_bytes_get_size (matrix) : 0;
++
++  if (width == 0 || height == 0 || size == width * height)
+     {
+-      gimp_image_convert_indexed_set_dither_matrix (g_bytes_get_data (matrix, NULL),
++      gimp_image_convert_indexed_set_dither_matrix (matrix ? g_bytes_get_data (matrix, NULL) : NULL,
+                                                     width, height);
+     }
+   else
+diff --git a/plug-ins/script-fu/libscriptfu/scheme-marshal-return.c b/plug-ins/script-fu/libscriptfu/scheme-marshal-return.c
+index 9ebd061e7b..1f6bea986e 100644
+--- a/plug-ins/script-fu/libscriptfu/scheme-marshal-return.c
++++ b/plug-ins/script-fu/libscriptfu/scheme-marshal-return.c
+@@ -466,9 +466,13 @@ marshal_returned_PDB_value (scheme  *sc,
+     }
+   else if (G_VALUE_HOLDS (value, G_TYPE_BYTES))
+     {
++      /* Empty bytes arrive as NULL, e.g. a missing window handle.
++       * The g_bytes_*() accessors reject NULL with a critical, so
++       * return an empty vector instead.
++       */
+       GBytes       *v_bytes  = g_value_get_boxed (value);
+-      const guint8 *v        = g_bytes_get_data (v_bytes, NULL);
+-      gsize         n        = g_bytes_get_size (v_bytes);
++      const guint8 *v        = v_bytes ? g_bytes_get_data (v_bytes, NULL) : NULL;
++      gsize         n        = v_bytes ? g_bytes_get_size (v_bytes) : 0;
+       pointer       vector   = sc->vptr->mk_vector (sc, n);
+ 
+       for (j = 0; j < n; j++)

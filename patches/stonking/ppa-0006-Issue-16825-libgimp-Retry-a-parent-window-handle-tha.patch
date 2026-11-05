@@ -1,0 +1,265 @@
+From e8644517979d77250e0d8ab3049f4da3aa6900fc Mon Sep 17 00:00:00 2001
+From: "Robert August Vincent II (Bob)" <pillarsdotnet@gmail.com>
+Date: Thu, 1 Oct 2026 14:16:52 -0400
+Subject: [PATCH] Issue #16825: libgimp: Retry a parent window handle that
+ isn't ready yet
+
+gimp_window_set_transient() and gimp_window_set_transient_for_display()
+asked the core for the parent's handle once, when called. On Wayland the
+core only has a handle once its window is mapped and the compositor has
+answered the xdg-foreign export, so a dialog set up before that, e.g. a
+load dialog for a file passed on the command line, never became
+transient, even though the handle existed moments later.
+
+When the handle is missing, ask again every 100 ms for up to 3 s, and
+set transiency as soon as it arrives; xdg-foreign allows that after the
+dialog is mapped. The retry stops when the dialog is destroyed, when the
+parent display goes away, or when gimp_window_set_transient*() is called
+again. X11 and Windows always have a handle, so they never retry.
+
+Also stop gui_display_get_window_id() from calling g_bytes_ref() on a
+NULL handle, which a retry would otherwise hit every 100 ms.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ app/gui/gui-vtable.c |  10 +--
+ libgimp/gimpui.c     | 161 ++++++++++++++++++++++++++++++++++---------
+ 2 files changed, 132 insertions(+), 39 deletions(-)
+
+diff --git a/app/gui/gui-vtable.c b/app/gui/gui-vtable.c
+index 4686423afd..31bb3323d3 100644
+--- a/app/gui/gui-vtable.c
++++ b/app/gui/gui-vtable.c
+@@ -388,11 +388,11 @@ gui_display_get_window_id (GimpDisplay *display)
+   GimpDisplay      *disp  = GIMP_DISPLAY (display);
+   GimpDisplayShell *shell = gimp_display_get_shell (disp);
+ 
+-  if (shell)
+-    {
+-      if (shell)
+-        return g_bytes_ref (shell->window_handle);
+-    }
++  /* The handle is NULL until the window is mapped and, on Wayland, the
++   * compositor has answered its export.
++   */
++  if (shell && shell->window_handle)
++    return g_bytes_ref (shell->window_handle);
+ 
+   return NULL;
+ }
+diff --git a/libgimp/gimpui.c b/libgimp/gimpui.c
+index 4d6809f13b..6f2169597a 100644
+--- a/libgimp/gimpui.c
++++ b/libgimp/gimpui.c
+@@ -252,6 +252,32 @@ static GdkWindow * gimp_ui_get_foreign_window      (gpointer           window);
+ static gboolean    gimp_window_transient_on_mapped (GtkWidget         *window,
+                                                     GdkEventAny       *event,
+                                                     GBytes            *handle);
++static void        gimp_window_set_transient_internal
++                                                   (GtkWindow         *window,
++                                                    GimpDisplay       *display);
++static GBytes    * gimp_window_get_parent_handle   (GimpDisplay       *display);
++static gboolean    gimp_window_transient_retry     (GtkWindow         *window);
++static void        gimp_window_transient_retry_cancel
++                                                   (GtkWindow         *window);
++static void        gimp_window_transient_retry_free
++                                                   (gpointer           data);
++
++
++/* While a parent window has no handle yet (on Wayland, until the core's
++ * window is mapped and the compositor has answered its export), ask the
++ * core again every TRANSIENT_RETRY_INTERVAL ms, at most
++ * TRANSIENT_RETRY_MAX times.
++ */
++#define TRANSIENT_RETRY_KEY      "gimp-window-transient-retry"
++#define TRANSIENT_RETRY_INTERVAL 100
++#define TRANSIENT_RETRY_MAX      30
++
++typedef struct
++{
++  GimpDisplay *display;   /* NULL for the plug-in's progress window */
++  guint        source_id;
++  gint         attempts;
++} TransientRetry;
+ 
+ 
+ static gboolean gimp_ui_initialized = FALSE;
+@@ -408,6 +434,8 @@ gimp_window_set_transient_for (GtkWindow *window,
+   g_return_if_fail (GTK_IS_WINDOW (window));
+   g_return_if_fail (handle != NULL);
+ 
++  gimp_window_transient_retry_cancel (window);
++
+ #if defined (GDK_WINDOWING_WIN32) || defined (GDK_WINDOWING_QUARTZ)
+   /* Windows and macOS don't use real cross-process transiency, so the
+      plug-in won't be on the right monitor. Center it before it is mapped
+@@ -448,33 +476,11 @@ void
+ gimp_window_set_transient_for_display (GtkWindow   *window,
+                                        GimpDisplay *display)
+ {
+-  GBytes *handle;
+-
+   g_return_if_fail (gimp_ui_initialized);
+   g_return_if_fail (GTK_IS_WINDOW (window));
+   g_return_if_fail (GIMP_IS_DISPLAY (display));
+ 
+-#if defined (GDK_WINDOWING_WIN32) || defined (GDK_WINDOWING_QUARTZ)
+-  /* Windows and macOS don't use real cross-process transiency, so the
+-     plug-in won't be on the right monitor. Center it before it is mapped
+-     (on macOS this also avoids a top-left render glitch on plug-ins). */
+-  gtk_window_set_position (window, GTK_WIN_POS_CENTER);
+-#endif
+-
+-  g_signal_handlers_disconnect_matched (window, G_SIGNAL_MATCH_FUNC,
+-                                        0, 0, NULL,
+-                                        gimp_window_transient_on_mapped,
+-                                        NULL);
+-
+-  handle = gimp_display_get_window_handle (display);
+-  g_signal_connect_data (window, "map-event",
+-                         G_CALLBACK (gimp_window_transient_on_mapped),
+-                         handle,
+-                         (GClosureNotify) g_bytes_unref,
+-                         G_CONNECT_AFTER);
+-
+-  if (gtk_widget_get_mapped (GTK_WIDGET (window)))
+-    gimp_window_transient_on_mapped (GTK_WIDGET (window), NULL, handle);
++  gimp_window_set_transient_internal (window, display);
+ }
+ 
+ /**
+@@ -490,11 +496,34 @@ gimp_window_set_transient_for_display (GtkWindow   *window,
+ void
+ gimp_window_set_transient (GtkWindow *window)
+ {
+-  GBytes *handle;
+-
+   g_return_if_fail (gimp_ui_initialized);
+   g_return_if_fail (GTK_IS_WINDOW (window));
+ 
++  gimp_window_set_transient_internal (window, NULL);
++}
++
++
++/*  private functions  */
++
++static void
++gimp_window_set_transient_internal (GtkWindow   *window,
++                                    GimpDisplay *display)
++{
++  TransientRetry *retry;
++  GBytes         *handle;
++
++  handle = gimp_window_get_parent_handle (display);
++
++  if (handle)
++    {
++      gimp_window_set_transient_for (window, handle);
++      g_bytes_unref (handle);
++
++      return;
++    }
++
++  gimp_window_transient_retry_cancel (window);
++
+ #if defined (GDK_WINDOWING_WIN32) || defined (GDK_WINDOWING_QUARTZ)
+   /* Windows and macOS don't use real cross-process transiency, so the
+      plug-in won't be on the right monitor. Center it before it is mapped
+@@ -502,24 +531,88 @@ gimp_window_set_transient (GtkWindow *window)
+   gtk_window_set_position (window, GTK_WIN_POS_CENTER);
+ #endif
+ 
++  /* Drop any handle from an earlier call: it belongs to another parent. */
+   g_signal_handlers_disconnect_matched (window, G_SIGNAL_MATCH_FUNC,
+                                         0, 0, NULL,
+                                         gimp_window_transient_on_mapped,
+                                         NULL);
+ 
+-  handle = gimp_progress_get_window_handle ();
+-  g_signal_connect_data (window, "map-event",
+-                         G_CALLBACK (gimp_window_transient_on_mapped),
+-                         handle,
+-                         (GClosureNotify) g_bytes_unref,
+-                         G_CONNECT_AFTER);
++  /* The parent has no handle yet, e.g. its Wayland export is still in
++   * flight. Ask again shortly; it is fine to set transiency once @window
++   * is already mapped.
++   */
++  retry            = g_new0 (TransientRetry, 1);
++  retry->display   = display ? g_object_ref (display) : NULL;
++  retry->source_id = g_timeout_add (TRANSIENT_RETRY_INTERVAL,
++                                    (GSourceFunc) gimp_window_transient_retry,
++                                    window);
++
++  g_object_set_data_full (G_OBJECT (window), TRANSIENT_RETRY_KEY, retry,
++                          gimp_window_transient_retry_free);
++  g_signal_connect (window, "destroy",
++                    G_CALLBACK (gimp_window_transient_retry_cancel),
++                    NULL);
++}
+ 
+-  if (gtk_widget_get_mapped (GTK_WIDGET (window)))
+-    gimp_window_transient_on_mapped (GTK_WIDGET (window), NULL, handle);
++static GBytes *
++gimp_window_get_parent_handle (GimpDisplay *display)
++{
++  if (display)
++    return gimp_display_is_valid (display) ?
++           gimp_display_get_window_handle (display) : NULL;
++
++  return gimp_progress_get_window_handle ();
+ }
+ 
++static gboolean
++gimp_window_transient_retry (GtkWindow *window)
++{
++  TransientRetry *retry;
++  GBytes         *handle;
+ 
+-/*  private functions  */
++  retry = g_object_get_data (G_OBJECT (window), TRANSIENT_RETRY_KEY);
++  g_return_val_if_fail (retry != NULL, G_SOURCE_REMOVE);
++
++  handle = gimp_window_get_parent_handle (retry->display);
++
++  /* Give up once the parent display is gone. */
++  if (! handle && ++retry->attempts < TRANSIENT_RETRY_MAX &&
++      (! retry->display || gimp_display_is_valid (retry->display)))
++    return G_SOURCE_CONTINUE;
++
++  /* This source ends here, whatever the outcome. */
++  retry->source_id = 0;
++  gimp_window_transient_retry_cancel (window);
++
++  if (handle)
++    {
++      gimp_window_set_transient_for (window, handle);
++      g_bytes_unref (handle);
++    }
++
++  return G_SOURCE_REMOVE;
++}
++
++static void
++gimp_window_transient_retry_cancel (GtkWindow *window)
++{
++  g_signal_handlers_disconnect_by_func (window,
++                                        gimp_window_transient_retry_cancel,
++                                        NULL);
++  g_object_set_data (G_OBJECT (window), TRANSIENT_RETRY_KEY, NULL);
++}
++
++static void
++gimp_window_transient_retry_free (gpointer data)
++{
++  TransientRetry *retry = data;
++
++  if (retry->source_id)
++    g_source_remove (retry->source_id);
++
++  g_clear_object (&retry->display);
++  g_free (retry);
++}
+ 
+ static void
+ gimp_ui_help_func (const gchar *help_id,

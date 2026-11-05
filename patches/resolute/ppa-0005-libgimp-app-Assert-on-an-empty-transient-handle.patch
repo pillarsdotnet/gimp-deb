@@ -1,0 +1,47 @@
+From 8662e71a4bbe207c8ead083e1209994306cab465 Mon Sep 17 00:00:00 2001
+From: "Robert August Vincent II (Bob)" <pillarsdotnet@gmail.com>
+Date: Thu, 1 Oct 2026 13:16:03 -0400
+Subject: [PATCH] libgimp, app: Assert on an empty transient handle
+
+With the protocol now preserving NULL, a NULL handle still means
+"no handle yet" and quietly skips transiency, but an empty, non-NULL
+handle can only come from a bug. Its data is NULL, which as a Wayland
+handle kills the display connection, so assert on it instead of
+passing it on.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ app/widgets/gimpwidgets-utils.c |    1 +
+ libgimp/gimpui.c                |    8 ++++++++
+ 2 files changed, 9 insertions(+)
+
+--- a/app/widgets/gimpwidgets-utils.c
++++ b/app/widgets/gimpwidgets-utils.c
+@@ -2600,6 +2600,7 @@ gimp_window_set_transient_cb (GtkWidget
+ #endif
+ 
+   g_return_if_fail (handle != NULL);
++  g_return_if_fail (g_bytes_get_size (handle) > 0);
+ 
+ #ifdef GDK_WINDOWING_WAYLAND
+   if (GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ()))
+--- a/libgimp/gimpui.c
++++ b/libgimp/gimpui.c
+@@ -430,9 +430,17 @@ gimp_window_transient_on_mapped (GtkWidg
+ {
+   gboolean transient_set = FALSE;
+ 
++  /* The core has no handle for a window whose Wayland export has not
++   * completed yet. No transiency is possible then.
++   */
+   if (handle == NULL)
+     return FALSE;
+ 
++  /* An empty handle, though, is a bug. Its data is NULL, which as a
++   * Wayland handle kills the display connection.
++   */
++  g_return_val_if_fail (g_bytes_get_size (handle) > 0, FALSE);
++
+ #ifdef GDK_WINDOWING_WAYLAND
+   if (GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ()))
+     {

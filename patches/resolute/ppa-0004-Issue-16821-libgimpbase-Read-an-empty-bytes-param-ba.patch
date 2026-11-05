@@ -1,0 +1,53 @@
+From 5dcb94643f2e2f15190cffc4ebbd28058fc36edc Mon Sep 17 00:00:00 2001
+From: "Robert August Vincent II (Bob)" <pillarsdotnet@gmail.com>
+Date: Thu, 1 Oct 2026 13:16:03 -0400
+Subject: [PATCH] Issue #16821: libgimpbase: Read an empty bytes param back as
+ NULL
+
+gp_params_write() sends a NULL GBytes as a length of 0, but
+gp_params_read() always built a GBytes from it, so a NULL crossed the
+wire as an empty, non-NULL GBytes whose data is NULL.
+
+That broke every receiver that checks for NULL. In particular, the core
+legitimately has no window handle for a window whose Wayland export has
+not completed, and the PDB documents NULL as a valid result. The
+plug-in's "handle == NULL" check in gimp_window_transient_on_mapped()
+could never fire, so the NULL data went to
+gdk_wayland_window_set_transient_for_exported(). libwayland rejects a
+NULL non-nullable string with EINVAL and GTK 3 exits the plug-in.
+
+The same happens in the other direction: the parent_window argument of
+gimp_brushes_popup() and the other resource popups is nullable, but a
+NULL from the plug-in arrived in the core as an empty handle, passed
+the "parent_handle != NULL" check in gui_pdb_dialog_new(), and killed
+the core's own Wayland connection. Stock 3.2.2 crashes this way on both
+KWin and Mutter.
+
+Read a length of 0 back as NULL, matching the writer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ libgimpbase/gimpprotocol.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/libgimpbase/gimpprotocol.c b/libgimpbase/gimpprotocol.c
+index 061ddf069d..ff57de6854 100644
+--- a/libgimpbase/gimpprotocol.c
++++ b/libgimpbase/gimpprotocol.c
+@@ -2141,6 +2141,16 @@ _gp_params_read (GIOChannel  *channel,
+             if (! _gimp_wire_read_int32 (channel, &data_len, 1, user_data))
+               goto cleanup;
+ 
++            /* A NULL GBytes is written with a length of 0. Read it back as
++             * NULL rather than as an empty GBytes, so that receivers can
++             * still tell "no value" apart, e.g. a missing window handle.
++             */
++            if (data_len == 0)
++              {
++                (*params)[i].data.d_bytes = NULL;
++                break;
++              }
++
+             data = g_new0 (guint8, data_len);
+ 
+             if (! _gimp_wire_read_int8 (channel, data, data_len, user_data))

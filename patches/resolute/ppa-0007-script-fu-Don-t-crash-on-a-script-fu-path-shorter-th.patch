@@ -1,0 +1,94 @@
+From ed9536209ad172ce2a1946f15d0fb6efff6a7bf4 Mon Sep 17 00:00:00 2001
+From: "Robert August Vincent II (Bob)" <pillarsdotnet@gmail.com>
+Date: Fri, 2 Oct 2026 21:33:43 -0400
+Subject: [PATCH] script-fu: Don't crash on a script-fu-path shorter than two
+ folders
+
+script_fu_sys_init_directory() took the second element of script-fu-path
+as the system scripts folder, and script_fu_user_init_directory() the
+first, without checking that either existed. Every ScriptFu start calls
+both, so script-fu crashed on startup whenever the path held fewer than
+two folders: after the user removed one in Preferences, or always in
+unit-testing mode, where gimp_config_build_data_path() returns only the
+source tree's folder. Each libgimp test logged that crash and passed.
+
+Fall back to the last folder, then to the installed scripts folder, for
+the system init folder, and to the user's scripts folder for the user
+init folder.
+
+Also stop script_fu_search_path() from reading error->message when an
+empty path expands to no folders without setting an error.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../script-fu/libscriptfu/script-fu-lib.c     | 39 ++++++++++++++++---
+ 1 file changed, 34 insertions(+), 5 deletions(-)
+
+diff --git a/plug-ins/script-fu/libscriptfu/script-fu-lib.c b/plug-ins/script-fu/libscriptfu/script-fu-lib.c
+index c678ec56e3..61769bd8d7 100644
+--- a/plug-ins/script-fu/libscriptfu/script-fu-lib.c
++++ b/plug-ins/script-fu/libscriptfu/script-fu-lib.c
+@@ -262,7 +262,8 @@ script_fu_search_path (void)
+       path = gimp_config_path_expand_to_files (path_str, &error);
+       g_free (path_str);
+ 
+-      if (! path)
++      /* An empty script-fu-path expands to no files and no error. */
++      if (error)
+         {
+           g_warning ("Can't convert script-fu-path to filesystem encoding: %s",
+                      error->message);
+@@ -306,10 +307,26 @@ script_fu_sys_init_directory (void)
+   GList *list_element;
+   gchar *result_path;
+ 
+-  /* The second list element is the sys scripts dir. */
++  /* The second list element is the sys scripts dir, by default. The user
++   * can shorten script-fu-path in Preferences, and in unit-testing mode it
++   * holds only the source tree's scripts dir, so fall back to the last
++   * element, or to the installed scripts dir when the path is empty.
++   */
+   list_element = g_list_next (paths);
++  if (! list_element)
++    list_element = g_list_last (paths);
++
++  if (list_element)
++    {
++      result_path = script_fu_get_init_subdirectory (list_element->data);
++    }
++  else
++    {
++      GFile *dir = gimp_data_directory_file ("scripts", NULL);
+ 
+-  result_path = script_fu_get_init_subdirectory (list_element->data);
++      result_path = script_fu_get_init_subdirectory (dir);
++      g_object_unref (dir);
++    }
+ 
+   g_list_free_full (paths, (GDestroyNotify) g_object_unref);
+ 
+@@ -326,10 +343,22 @@ script_fu_user_init_directory (void)
+   GList *list_element;
+   gchar *result_path;
+ 
+-  /* The first list element is the user scripts dir. */
++  /* The first list element is the user scripts dir. The path is empty
++   * when the user has removed every folder from it in Preferences.
++   */
+   list_element = paths;
+ 
+-  result_path = script_fu_get_init_subdirectory (list_element->data);
++  if (list_element)
++    {
++      result_path = script_fu_get_init_subdirectory (list_element->data);
++    }
++  else
++    {
++      GFile *dir = gimp_directory_file ("scripts", NULL);
++
++      result_path = script_fu_get_init_subdirectory (dir);
++      g_object_unref (dir);
++    }
+ 
+   g_list_free_full (paths, (GDestroyNotify) g_object_unref);
+ 

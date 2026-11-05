@@ -1,0 +1,10 @@
+# This repository carries only the patch delta and the CI that applies it.
+# Everything else in this directory is output from the October 2026
+# investigation that produced the patches -- unpacked source trees, built
+# debs, build and gdb logs, a local apt repo. None of it is needed to rebuild
+# the package, so none of it is tracked. Keep it for reference or delete it.
+/*
+!/.forgejo/
+!/.gitignore
+!/README.md
+!/patches/
