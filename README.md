@@ -59,12 +59,22 @@ whole change if that ever stops being true.
 ## Versions
 
 ```
-<archive version>+ppa1~git<stamp>.<sha>~ubuntu<release>.1
+<archive version>+ppa1+git<stamp>.<sha>~ubuntu<release>.1
 ```
 
-for example `3.2.6-1+ppa1~git20261105081500.a1b2c3d~ubuntu26.10.1`. This sorts
-above the archive's own version, so apt prefers it; and in archive order
-across series, so a host upgrading resolute → stonking still moves forward.
+for example `3.2.6-1+ppa1+git20261105132214.2251799~ubuntu26.10.1`. This sorts
+above the archive's own version, so apt prefers it; above the
+`+ppa1~ubuntu<release>.1` uploads of October 2026; and in archive order across
+series, so a host upgrading resolute → stonking still moves forward.
+
+The `+git` is a `+` and not a `~` for a reason that cost a build to find. With
+`+ppa1~git<stamp>…`, the segment after `+ppa1~` compares `git…` against the
+older uploads' `ubuntu…`, and `g` sorts before `u` — so every build here would
+have ranked *below* the October upload it was meant to replace, and apt would
+never have installed one. Check any change to the scheme with
+`dpkg --compare-versions` against the archive version, the October stonking
+upload `3.2.6-1+ppa1~ubuntu26.10.1`, and the October resolute upload
+`3.2.2-1ubuntu0.26.04.1+ppa1`.
 
 Because the string embeds both the archive version and the commit, "is this
 version already in the registry?" is a complete answer to "is there anything
@@ -108,7 +118,9 @@ The CI script is self-contained and takes a series and a release. Run it in a
 container of the target series, with a token that can write packages:
 
 ```sh
-docker run --rm -it --shm-size=1g -v "$PWD:/src" -w /src \
+docker run --rm -it --shm-size=1g \
+  --add-host forgejo.bobbalisa.org:10.0.0.2 \
+  -v "$PWD:/src:ro" -w /src \
   -e REGISTRY_TOKEN=... ubuntu:26.10 \
   sh -c 'apt-get update -qq &&
          apt-get install -y -qq --no-install-recommends \
@@ -116,6 +128,16 @@ docker run --rm -it --shm-size=1g -v "$PWD:/src" -w /src \
          git config --global --add safe.directory /src &&
          .forgejo/registry-upload stonking 26.10'
 ```
+
+The `--add-host` is needed when building on a LAN host: the host itself
+resolves `forgejo.bobbalisa.org` to `10.0.0.2`, but a container asks public
+DNS and gets the external address, which does not come back through NAT. The
+script fails early and says so rather than building first and discovering the
+problem at upload time. The CI runner is on homelab and does not need it.
+
+Mounting the checkout read-only is deliberate — the build happens entirely in
+a temporary directory, and the changelog entry is written there, so nothing
+should ever be written back here.
 
 Leave `REGISTRY_TOKEN` unset to build without uploading — the uploads will
 report HTTP 401 and the script will exit non-zero, after the debs are built.
