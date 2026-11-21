@@ -7,4 +7,5 @@
 !/.forgejo/
 !/.gitignore
 !/README.md
+!/trivy.yaml
 !/patches/
