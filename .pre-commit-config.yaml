@@ -1,0 +1,59 @@
+# Pre-commit hooks for this packaging repository.
+#   * file hygiene — merge markers, TOML/YAML syntax, EOF, trailing whitespace
+#   * ruff         — lint the Python code
+#   * mypy         — type-check the Python code
+#   * prettier     — format the Markdown and YAML
+#   * markdownlint — lint the Markdown (README.md)
+#   * yamllint     — lint the YAML
+#   * vale         — check the prose in Markdown (see .vale.ini)
+#
+# Setup:   pre-commit install        (installs the git hook)
+# Run all: pre-commit run --all-files
+# Bump:    pre-commit autoupdate
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.10.1
+    hooks:
+      - id: prettier
+        types_or: [markdown, yaml]
+
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.50.0
+    hooks:
+      - id: markdownlint
+
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+
+  - repo: local
+    hooks:
+      - id: vale
+        name: vale
+        # The PyPI "vale" package wraps the official binary, so pre-commit
+        # installs it into the hook's own environment - nothing to install by
+        # hand, locally or in CI. It does not carry the binary: the wrapper
+        # downloads it on first run and copies it into its own site-packages,
+        # which is why require_serial is below. Without it pre-commit can run
+        # two copies of the hook at once over different batches of files, both
+        # see no binary, both download, and the second copy fails with
+        # "OSError: [Errno 26] Text file busy" on a file the first is
+        # executing. That broke the Lint workflow on a cold cache; locally,
+        # where the binary is already there, it never showed. CLAUDE.md and .claude/ are instructions for
+        # an agent, not prose for people, so they stay out of the prose check.
+        entry: vale
+        language: python
+        additional_dependencies: ["vale==3.27.0.0"]
+        require_serial: true
+        types: [markdown]
+        exclude: ^(CLAUDE\.md|\.claude/)

@@ -9,3 +9,12 @@
 !/README.md
 !/trivy.yaml
 !/patches/
+# The lint configuration, which must be tracked for the Lint workflow to
+# find it: this file whitelists, so anything not named here is invisible
+# to `git add -A` and the workflow then fails with ".pre-commit-config.yaml
+# is not a file" having committed nothing.
+!/.pre-commit-config.yaml
+!/.vale.ini
+!/.vale/
+!/.markdownlint.yaml
+!/.yamllint
