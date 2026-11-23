@@ -19,10 +19,10 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 +++ b/app/widgets/gimpwidgets-utils.c
 @@ -2600,6 +2600,7 @@ gimp_window_set_transient_cb (GtkWidget
  #endif
- 
+
    g_return_if_fail (handle != NULL);
 +  g_return_if_fail (g_bytes_get_size (handle) > 0);
- 
+
  #ifdef GDK_WINDOWING_WAYLAND
    if (GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ()))
 --- a/libgimp/gimpui.c
@@ -30,13 +30,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 @@ -430,9 +430,17 @@ gimp_window_transient_on_mapped (GtkWidg
  {
    gboolean transient_set = FALSE;
- 
+
 +  /* The core has no handle for a window whose Wayland export has not
 +   * completed yet. No transiency is possible then.
 +   */
    if (handle == NULL)
      return FALSE;
- 
+
 +  /* An empty handle, though, is a bug. Its data is NULL, which as a
 +   * Wayland handle kills the display connection.
 +   */

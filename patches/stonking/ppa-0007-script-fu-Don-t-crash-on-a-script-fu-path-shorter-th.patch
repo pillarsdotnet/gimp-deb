@@ -31,7 +31,7 @@ index c678ec56e3..61769bd8d7 100644
 @@ -262,7 +262,8 @@ script_fu_search_path (void)
        path = gimp_config_path_expand_to_files (path_str, &error);
        g_free (path_str);
- 
+
 -      if (! path)
 +      /* An empty script-fu-path expands to no files and no error. */
 +      if (error)
@@ -41,7 +41,7 @@ index c678ec56e3..61769bd8d7 100644
 @@ -306,10 +307,26 @@ script_fu_sys_init_directory (void)
    GList *list_element;
    gchar *result_path;
- 
+
 -  /* The second list element is the sys scripts dir. */
 +  /* The second list element is the sys scripts dir, by default. The user
 +   * can shorten script-fu-path in Preferences, and in unit-testing mode it
@@ -59,24 +59,24 @@ index c678ec56e3..61769bd8d7 100644
 +  else
 +    {
 +      GFile *dir = gimp_data_directory_file ("scripts", NULL);
- 
+
 -  result_path = script_fu_get_init_subdirectory (list_element->data);
 +      result_path = script_fu_get_init_subdirectory (dir);
 +      g_object_unref (dir);
 +    }
- 
+
    g_list_free_full (paths, (GDestroyNotify) g_object_unref);
- 
+
 @@ -326,10 +343,22 @@ script_fu_user_init_directory (void)
    GList *list_element;
    gchar *result_path;
- 
+
 -  /* The first list element is the user scripts dir. */
 +  /* The first list element is the user scripts dir. The path is empty
 +   * when the user has removed every folder from it in Preferences.
 +   */
    list_element = paths;
- 
+
 -  result_path = script_fu_get_init_subdirectory (list_element->data);
 +  if (list_element)
 +    {
@@ -89,6 +89,5 @@ index c678ec56e3..61769bd8d7 100644
 +      result_path = script_fu_get_init_subdirectory (dir);
 +      g_object_unref (dir);
 +    }
- 
+
    g_list_free_full (paths, (GDestroyNotify) g_object_unref);
- 

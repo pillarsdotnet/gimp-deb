@@ -33,7 +33,7 @@ index 4686423afd..31bb3323d3 100644
 @@ -388,11 +388,11 @@ gui_display_get_window_id (GimpDisplay *display)
    GimpDisplay      *disp  = GIMP_DISPLAY (display);
    GimpDisplayShell *shell = gimp_display_get_shell (disp);
- 
+
 -  if (shell)
 -    {
 -      if (shell)
@@ -44,7 +44,7 @@ index 4686423afd..31bb3323d3 100644
 +   */
 +  if (shell && shell->window_handle)
 +    return g_bytes_ref (shell->window_handle);
- 
+
    return NULL;
  }
 diff --git a/libgimp/gimpui.c b/libgimp/gimpui.c
@@ -81,13 +81,13 @@ index 4d6809f13b..6f2169597a 100644
 +  guint        source_id;
 +  gint         attempts;
 +} TransientRetry;
- 
- 
+
+
  static gboolean gimp_ui_initialized = FALSE;
 @@ -408,6 +434,8 @@ gimp_window_set_transient_for (GtkWindow *window,
    g_return_if_fail (GTK_IS_WINDOW (window));
    g_return_if_fail (handle != NULL);
- 
+
 +  gimp_window_transient_retry_cancel (window);
 +
  #if defined (GDK_WINDOWING_WIN32) || defined (GDK_WINDOWING_QUARTZ)
@@ -102,7 +102,7 @@ index 4d6809f13b..6f2169597a 100644
    g_return_if_fail (gimp_ui_initialized);
    g_return_if_fail (GTK_IS_WINDOW (window));
    g_return_if_fail (GIMP_IS_DISPLAY (display));
- 
+
 -#if defined (GDK_WINDOWING_WIN32) || defined (GDK_WINDOWING_QUARTZ)
 -  /* Windows and macOS don't use real cross-process transiency, so the
 -     plug-in won't be on the right monitor. Center it before it is mapped
@@ -126,7 +126,7 @@ index 4d6809f13b..6f2169597a 100644
 -    gimp_window_transient_on_mapped (GTK_WIDGET (window), NULL, handle);
 +  gimp_window_set_transient_internal (window, display);
  }
- 
+
  /**
 @@ -490,11 +496,34 @@ gimp_window_set_transient_for_display (GtkWindow   *window,
  void
@@ -136,7 +136,7 @@ index 4d6809f13b..6f2169597a 100644
 -
    g_return_if_fail (gimp_ui_initialized);
    g_return_if_fail (GTK_IS_WINDOW (window));
- 
+
 +  gimp_window_set_transient_internal (window, NULL);
 +}
 +
@@ -168,13 +168,13 @@ index 4d6809f13b..6f2169597a 100644
 @@ -502,24 +531,88 @@ gimp_window_set_transient (GtkWindow *window)
    gtk_window_set_position (window, GTK_WIN_POS_CENTER);
  #endif
- 
+
 +  /* Drop any handle from an earlier call: it belongs to another parent. */
    g_signal_handlers_disconnect_matched (window, G_SIGNAL_MATCH_FUNC,
                                          0, 0, NULL,
                                          gimp_window_transient_on_mapped,
                                          NULL);
- 
+
 -  handle = gimp_progress_get_window_handle ();
 -  g_signal_connect_data (window, "map-event",
 -                         G_CALLBACK (gimp_window_transient_on_mapped),
@@ -197,7 +197,7 @@ index 4d6809f13b..6f2169597a 100644
 +                    G_CALLBACK (gimp_window_transient_retry_cancel),
 +                    NULL);
 +}
- 
+
 -  if (gtk_widget_get_mapped (GTK_WIDGET (window)))
 -    gimp_window_transient_on_mapped (GTK_WIDGET (window), NULL, handle);
 +static GBytes *
@@ -209,13 +209,13 @@ index 4d6809f13b..6f2169597a 100644
 +
 +  return gimp_progress_get_window_handle ();
  }
- 
+
 +static gboolean
 +gimp_window_transient_retry (GtkWindow *window)
 +{
 +  TransientRetry *retry;
 +  GBytes         *handle;
- 
+
 -/*  private functions  */
 +  retry = g_object_get_data (G_OBJECT (window), TRANSIENT_RETRY_KEY);
 +  g_return_val_if_fail (retry != NULL, G_SOURCE_REMOVE);
@@ -260,6 +260,6 @@ index 4d6809f13b..6f2169597a 100644
 +  g_clear_object (&retry->display);
 +  g_free (retry);
 +}
- 
+
  static void
  gimp_ui_help_func (const gchar *help_id,

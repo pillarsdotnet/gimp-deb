@@ -34,7 +34,7 @@ index e42ada2b6f..7bed8fcab9 100644
 --- a/app/pdb/image-convert-cmds.c
 +++ b/app/pdb/image-convert-cmds.c
 @@ -207,9 +207,14 @@ image_convert_set_dither_matrix_invoker (GimpProcedure         *procedure,
- 
+
    if (success)
      {
 -      if (width == 0 || height == 0 || g_bytes_get_size (matrix) == width * height)
@@ -56,14 +56,14 @@ index baf6852c2d..7a7bc2bd67 100644
 +++ b/libgimp/gimpbrush.c
 @@ -184,7 +184,10 @@ gimp_brush_get_data (GimpBrush *brush)
                            &color_bpp, &color_bytes);
- 
+
    mask  = g_bytes_unref_to_data (mask_bytes, &mask_size);
 -  color = g_bytes_unref_to_data (color_bytes, &color_size);
 +  /* A brush without color pixels has no color bytes, which arrive as
 +   * NULL. g_bytes_unref_to_data() rejects NULL with a critical.
 +   */
 +  color = color_bytes ? g_bytes_unref_to_data (color_bytes, &color_size) : NULL;
- 
+
    brush->mask = gegl_buffer_linear_new_from_data ((const gpointer) mask,
                                                    gimp_brush_data_get_format (mask_bpp, FALSE),
 diff --git a/libgimp/gimppalette.c b/libgimp/gimppalette.c
@@ -79,11 +79,11 @@ index 98b1b8155f..45629727f3 100644
    gint    n_colors;
 -  gsize   n_bytes;
 +  gsize   n_bytes  = 0;
- 
+
    g_return_val_if_fail (GIMP_IS_PALETTE (palette), NULL);
    g_return_val_if_fail (format != NULL, NULL);
    g_return_val_if_fail (num_colors != NULL || num_bytes != NULL, NULL);
- 
+
    bytes    = _gimp_palette_get_bytes (palette, format, &n_colors);
 -  colormap = g_bytes_unref_to_data (bytes, &n_bytes);
 +  /* An empty palette has no bytes, which arrive as NULL.
@@ -92,7 +92,7 @@ index 98b1b8155f..45629727f3 100644
 +   */
 +  if (bytes)
 +    colormap = g_bytes_unref_to_data (bytes, &n_bytes);
- 
+
    if (num_colors)
      *num_colors = n_colors;
 diff --git a/pdb/groups/image_convert.pdb b/pdb/groups/image_convert.pdb
@@ -134,5 +134,5 @@ index 9ebd061e7b..1f6bea986e 100644
 +      const guint8 *v        = v_bytes ? g_bytes_get_data (v_bytes, NULL) : NULL;
 +      gsize         n        = v_bytes ? g_bytes_get_size (v_bytes) : 0;
        pointer       vector   = sc->vptr->mk_vector (sc, n);
- 
+
        for (j = 0; j < n; j++)

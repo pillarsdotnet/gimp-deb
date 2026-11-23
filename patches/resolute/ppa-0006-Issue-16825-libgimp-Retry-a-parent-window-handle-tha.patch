@@ -30,7 +30,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 @@ -388,11 +388,11 @@ gui_display_get_window_id (GimpDisplay *
    GimpDisplay      *disp  = GIMP_DISPLAY (display);
    GimpDisplayShell *shell = gimp_display_get_shell (disp);
- 
+
 -  if (shell)
 -    {
 -      if (shell)
@@ -41,7 +41,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 +   */
 +  if (shell && shell->window_handle)
 +    return g_bytes_ref (shell->window_handle);
- 
+
    return NULL;
  }
 --- a/libgimp/gimpui.c
@@ -76,13 +76,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 +  guint        source_id;
 +  gint         attempts;
 +} TransientRetry;
- 
- 
+
+
  static gboolean gimp_ui_initialized = FALSE;
 @@ -232,6 +258,8 @@ gimp_window_set_transient_for (GtkWindow
    g_return_if_fail (GTK_IS_WINDOW (window));
    g_return_if_fail (handle != NULL);
- 
+
 +  gimp_window_transient_retry_cancel (window);
 +
    g_signal_handlers_disconnect_matched (window, G_SIGNAL_MATCH_FUNC,
@@ -97,7 +97,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
    g_return_if_fail (gimp_ui_initialized);
    g_return_if_fail (GTK_IS_WINDOW (window));
    g_return_if_fail (GIMP_IS_DISPLAY (display));
- 
+
 -  g_signal_handlers_disconnect_matched (window, G_SIGNAL_MATCH_FUNC,
 -                                        0, 0, NULL,
 -                                        gimp_window_transient_on_mapped,
@@ -114,7 +114,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 -    gimp_window_transient_on_mapped (GTK_WIDGET (window), NULL, handle);
 +  gimp_window_set_transient_internal (window, display);
  }
- 
+
  /**
 @@ -300,29 +313,116 @@ gimp_window_set_transient_for_display (G
  void
@@ -124,7 +124,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 -
    g_return_if_fail (gimp_ui_initialized);
    g_return_if_fail (GTK_IS_WINDOW (window));
- 
+
 +  gimp_window_set_transient_internal (window, NULL);
 +}
 +
@@ -155,7 +155,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
                                          0, 0, NULL,
                                          gimp_window_transient_on_mapped,
                                          NULL);
- 
+
 -  handle = gimp_progress_get_window_handle ();
 -  g_signal_connect_data (window, "map-event",
 -                         G_CALLBACK (gimp_window_transient_on_mapped),
@@ -178,7 +178,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 +                    G_CALLBACK (gimp_window_transient_retry_cancel),
 +                    NULL);
 +}
- 
+
 -  if (gtk_widget_get_mapped (GTK_WIDGET (window)))
 -    gimp_window_transient_on_mapped (GTK_WIDGET (window), NULL, handle);
 +static GBytes *
@@ -190,13 +190,13 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 +
 +  return gimp_progress_get_window_handle ();
  }
- 
+
 +static gboolean
 +gimp_window_transient_retry (GtkWindow *window)
 +{
 +  TransientRetry *retry;
 +  GBytes         *handle;
- 
+
 -/*  private functions  */
 +  retry = g_object_get_data (G_OBJECT (window), TRANSIENT_RETRY_KEY);
 +  g_return_val_if_fail (retry != NULL, G_SOURCE_REMOVE);
@@ -241,6 +241,6 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 +  g_clear_object (&retry->display);
 +  g_free (retry);
 +}
- 
+
  static void
  gimp_ui_help_func (const gchar *help_id,

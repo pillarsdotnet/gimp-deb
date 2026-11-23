@@ -37,7 +37,7 @@ index 061ddf069d..ff57de6854 100644
 @@ -2141,6 +2141,16 @@ _gp_params_read (GIOChannel  *channel,
              if (! _gimp_wire_read_int32 (channel, &data_len, 1, user_data))
                goto cleanup;
- 
+
 +            /* A NULL GBytes is written with a length of 0. Read it back as
 +             * NULL rather than as an empty GBytes, so that receivers can
 +             * still tell "no value" apart, e.g. a missing window handle.
@@ -49,5 +49,5 @@ index 061ddf069d..ff57de6854 100644
 +              }
 +
              data = g_new0 (guint8, data_len);
- 
+
              if (! _gimp_wire_read_int8 (channel, data, data_len, user_data))
